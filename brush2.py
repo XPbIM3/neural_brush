@@ -1,15 +1,18 @@
 import os
-
-from numpy.lib.shape_base import tile
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0' 
 import cv2 as cv
 import numpy as np
-import threading
 import tensorflow as tf
 from keras_unet_collection import models
 from keras_unet_collection import losses
+import imgaug.augmenters as iaa
+import imgaug as ia
 
-SKIP_EVERY = 4
+
+
+
+
+USE_EVERY_NTH = 2
 
 BRUSH_SIZE = 12
 BRUSH_TYPES = {49:'POSITIVE', 50:'NEGATIVE', 51: 'NEURAL'}
@@ -18,7 +21,8 @@ BATCH_SIZE = 16
 N_CH = 3
 BRUSH_COLOR = (250,250,250)
 
-img_orig  = cv.imread('1.png', -1)
+
+img_orig  = cv.imread('blood.png', -1)
 screen = img_orig.copy()
 
 mask_positive = np.zeros((screen.shape[0],screen.shape[1]), dtype=np.uint8)
@@ -34,6 +38,24 @@ model_global = None
 
 TILE_SIDE = 64
 NN_SIDE = 32
+
+
+
+global_seq = iaa.Sequential([
+		iaa.Fliplr(0.5),
+		iaa.Flipud(0.5),
+		iaa.Rot90((0, 3)),
+	    iaa.LinearContrast((0.9, 1.1)),
+	    iaa.GaussianBlur(sigma=(0, 2)),
+	    iaa.OneOf(  [iaa.Multiply((0.9, 1.1), per_channel=True), iaa.Add((-10, 10), per_channel=True)]),
+	    iaa.Sometimes(0.9, iaa.PerspectiveTransform(scale=(0.01, 0.15)))
+		], random_order=True)
+
+
+def batchAug(samples, labels):
+	samples2, labels2 = global_seq(images=samples, segmentation_maps=labels)
+	return np.array(samples2), np.array(labels2)
+
 
 
 def shuffle_in_unison_scary(a, b):
@@ -58,7 +80,7 @@ def render(pointer_coords):
 		y=pointer_coords[1]
 		t = img_orig[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2, :]
 		t_orig = t.copy()
-		t = cv.resize(t, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, N_CH))/255.0
+		t = cv.resize(t, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, N_CH))
 		t = t.reshape(1,NN_SIDE,NN_SIDE,N_CH)
 		r = model_global.predict(t)
 		r=(r*255).astype(np.uint8)[0]
@@ -78,7 +100,7 @@ def mouseCb(event, x, y,flags, params):
 
 	if (BRUSH_TYPE_CURRENT == 'NEURAL' and event==cv.EVENT_LBUTTONUP):
 		t = img_orig[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2,:]
-		t = cv.resize(t, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, N_CH))/255.0
+		t = cv.resize(t, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, N_CH))
 		t = t.reshape(1,NN_SIDE,NN_SIDE,N_CH)
 		r = model_global.predict(t)
 		r=(r*255).astype(np.uint8)[0]
@@ -133,6 +155,8 @@ def parseKey(key):
 
 
 
+
+
 	else:
 		print('key pressed:', key)
 
@@ -154,18 +178,20 @@ def getBatchFromIndex(y_arr,x_arr):
 		y,x = y_arr[i], x_arr[i]
 		t = img_orig[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2, :]
 		l = mask_positive[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2]
-		t = cv.resize(t, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, N_CH))/255.0
-		l = cv.resize(l, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, 1))/255.0
+		t = cv.resize(t, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, N_CH))
+		l = cv.resize(l, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, 1))
 		tiles.append(t)
 		labels.append(l)
-	return (np.array(tiles).astype(np.float32), np.array(labels).astype(np.float32))
+
+	tiles_aug, labels_aug = batchAug(tiles, labels)
+	return (tiles_aug, (labels_aug/255.0).astype(np.float32))
 
 
 def getBatchGenerator():
 	global pixel_list,BATCH_SIZE
 	y,x = pixel_list
-	y = y[::SKIP_EVERY]
-	x = x[::SKIP_EVERY]
+	y = y[::USE_EVERY_NTH]
+	x = x[::USE_EVERY_NTH]
 
 	shuffle_in_unison_scary(y,x)
 	assert len(y)==len(x)
@@ -181,9 +207,9 @@ def getBatchGenerator():
 
 
 def exportSet():
-	global SKIP_EVERY, BATCH_SIZE, pixel_list
+	global USE_EVERY_NTH, BATCH_SIZE, pixel_list
 	g = getBatchGenerator()
-	b_count = len(pixel_list[0][::SKIP_EVERY])//BATCH_SIZE
+	b_count = len(pixel_list[0][::USE_EVERY_NTH])//BATCH_SIZE
 	for i in range(b_count):
 		t_batch, l_batch = g.__next__()
 		tile_res = (np.vstack(t_batch*255).astype(np.uint8))
@@ -197,7 +223,7 @@ def exportSet():
 def trainSingleShot():
 	global model_global, BATCH_SIZE, pixel_list
 	g = getBatchGenerator()
-	b_count = len(pixel_list[0][::SKIP_EVERY])//BATCH_SIZE
+	b_count = len(pixel_list[0][::USE_EVERY_NTH])//BATCH_SIZE
 	print(b_count)
 	model_global.fit(x=g, steps_per_epoch=b_count, workers = 1)
 
@@ -211,7 +237,13 @@ def trainSingleShot():
 
 
 print('set up keras model')
-model_global = models.unet_2d(input_size = (NN_SIDE, NN_SIDE, N_CH), filter_num = [16,32,64,128], n_labels=1, output_activation='Sigmoid', batch_norm=False)
+model_unet = models.unet_2d(input_size = (NN_SIDE, NN_SIDE, N_CH), filter_num = [16,32,64,128], n_labels=1, output_activation='Sigmoid', batch_norm=False)
+
+model_global = tf.keras.Sequential()
+model_global.add(tf.keras.layers.InputLayer(input_shape = (NN_SIDE,NN_SIDE,N_CH)))
+model_global.add(tf.keras.layers.Lambda(lambda x: x/255))
+model_global.add(model_unet)
+
 model_global.compile(loss='bce', optimizer='adam', metrics = 'accuracy')
 
 
