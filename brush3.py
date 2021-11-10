@@ -2,6 +2,7 @@ import os
 import sys
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0' 
+
 import cv2 as cv
 import numpy as np
 import tensorflow as tf
@@ -54,10 +55,15 @@ needRedraw = True
 needRecount = False
 model_global = None
 
-TILE_SIDE = 64
-NN_SIDE = 32
+TILE_SIDE = 128
+HALF_TILE_SIDE = TILE_SIDE//2
+NN_SIDE = int(round(128//16)*16)
+HALF_NN_SIDE = NN_SIDE//2
+SCALE_FACTOR = NN_SIDE/TILE_SIDE
 
 
+#breakpoint()
+img_orig_resize = cv.resize(img_orig, (0,0) , fx=SCALE_FACTOR, fy=SCALE_FACTOR)
 
 global_seq = iaa.Sequential([
 		iaa.Fliplr(0.5),
@@ -75,66 +81,6 @@ def batchAug(samples, labels):
 
 
 
-
-##################
-
-
-
-def convolution_operation(entered_input, filters=64, regularizer=None):
-    # Taking first input and implementing the first conv block
-    conv1 = Conv2D(filters, kernel_size = (3,3), padding = "same", kernel_regularizer=regularizer )(entered_input)
-    act1 = ReLU()(conv1)
-    
-    # Taking first input and implementing the second conv block
-    conv2 = Conv2D(filters, kernel_size = (3,3), padding = "same", kernel_regularizer= regularizer)(act1)
-    act2 = ReLU()(conv2)
-    
-    return act2
-
-
-def encoder(entered_input, filters=64):
-    # Collect the start and end of each sub-block for normal pass and skip connections
-    enc1 = convolution_operation(entered_input, filters, regularizer=tf.keras.regularizers.L1L2(l1=0.01, l2=0.01))
-    MaxPool1 = MaxPooling2D(strides = (2,2))(enc1)
-    return enc1, MaxPool1
-
-
-
-
-
-def decoder(entered_input, skip, filters=64):
-    # Upsampling and concatenating the essential features
-    Upsample = Conv2DTranspose(filters, (2, 2), strides=2, padding="same")(entered_input)
-    Connect_Skip = Concatenate()([Upsample, skip])
-    out = convolution_operation(Connect_Skip, filters)
-    return out
-
-
-def U_Net(Image_Size):
-    # Take the image size and shape
-    input1 = Input(Image_Size)
-    
-    # Construct the encoder blocks
-    skip1, encoder_1 = encoder(input1, 16)
-    skip2, encoder_2 = encoder(encoder_1, 16*2)
-    skip3, encoder_3 = encoder(encoder_2, 16*4)
-    skip4, encoder_4 = encoder(encoder_3, 16*8)
-    
-    # Preparing the next block
-    conv_block = convolution_operation(encoder_4, 64*16, regularizer=tf.keras.regularizers.L1L2(l1=0.01, l2=0.01))
-    
-    # Construct the decoder blocks
-    decoder_1 = decoder(conv_block, skip4, 16*8)
-    decoder_2 = decoder(decoder_1, skip3, 16*4)
-    decoder_3 = decoder(decoder_2, skip2, 16*2)
-    decoder_4 = decoder(decoder_3, skip1, 16)
-    
-    out = Conv2D(1, 1, padding="same", activation="sigmoid", kernel_regularizer=tf.keras.regularizers.L1L2(l1=0.01, l2=0.01))(decoder_4)
-
-    model = Model(input1, out)
-    return model
-
-##################
 
 #masked loss
 
@@ -162,8 +108,21 @@ def shuffle_in_unison_scary(a, b):
 
 
 
+def conditionCoords(y,x, shape, h_side=HALF_TILE_SIDE):
+	if x < h_side:
+		x = h_side
+	if y<h_side:
+		y = h_side
+	if x > shape[1]-h_side:
+		x=shape[1]-h_side
+	if y > shape[0]-h_side:
+		y=shape[0]-h_side
+	return (y,x)
+	
+	
+
 def render(pointer_coords):
-	global img_orig, screen, mask, BRUSH_TYPE_CURRENT, model_global,needRedraw
+	global img_orig, screen, mask, BRUSH_TYPE_CURRENT, model_global,needRedraw,HALF_NN_SIDE,img_orig_resize, SCALE_FACTOR
 	
 	screen = img_orig.copy()
 	screen[mask_positive == 255] = (0,255,0)
@@ -174,18 +133,20 @@ def render(pointer_coords):
 	elif pointer_coords[0]!=-1 and pointer_coords[1]!=-1 and BRUSH_TYPE_CURRENT == 'NEURAL':
 		x=pointer_coords[0]
 		y=pointer_coords[1]
-		t = img_orig[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2, :]
-		t_orig = t.copy()
-		t = cv.resize(t, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, N_CH))
-		t = t.reshape(1,NN_SIDE,NN_SIDE,N_CH)
-		r = model_global.predict(t)
-		r=(r*255).astype(np.uint8)[0]
-		a,th = cv.threshold(r,128, 255,cv.THRESH_BINARY)
-		target = cv.resize(th, (TILE_SIDE, TILE_SIDE))
-		#target_sc = screen[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2, :]
-		px_lst = np.where(target>0)
-		t_orig[px_lst]=[255,255,255]
-		screen[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2, :] = t_orig
+		y,x = conditionCoords(y,x, img_orig.shape)
+		
+		y_resized = round(y*SCALE_FACTOR)
+		x_resized = round(x*SCALE_FACTOR)
+
+		t = img_orig_resize[y_resized-HALF_NN_SIDE:y_resized+HALF_NN_SIDE, x_resized-HALF_NN_SIDE:x_resized+HALF_NN_SIDE, :]
+		t = t.reshape(1,*t.shape)
+		#with tf.device('/cpu:0'):
+		r = model_inference(t, training=False)
+		r = tf.cast(r, tf.uint8)
+		th = r.numpy()
+		target = np.broadcast_to(th[0], (TILE_SIDE, TILE_SIDE, 3))
+		screen[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2, :] = target
+
 	cv.imshow('img', screen)
 
 
@@ -246,7 +207,6 @@ def parseKey(key):
 	elif key == ord('e'):
 		print('Export set!')
 		pixelRecount()
-		exportSet()
 		print('exports done!')
 
 
@@ -265,29 +225,40 @@ def pixelRecount():
 
 
 
+def checkCoords(y,x,img_shape):
+	global HALF_TILE_SIDE
+	res = True
+	if x < HALF_TILE_SIDE or y < HALF_TILE_SIDE:
+		res = False
+	if x>img_shape[1]-HALF_TILE_SIDE or y>img_shape[0]-HALF_TILE_SIDE:
+		res = False
+	return res
+
 def getBatchFromIndex(y_arr,x_arr):
-	global img_orig, mask_positive, TILE_SIDE, NN_SIDE, mask_negative
+	global img_orig, mask_positive, TILE_SIDE, NN_SIDE, mask_negative, HALF_TILE_SIDE, HALF_NN_SIDE
 	assert len(x_arr)==len(y_arr)
 	tiles  = []
 	labels = []
 	for i in range(len(x_arr)):
 		y,x = y_arr[i], x_arr[i]
-		t = img_orig[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2, :]
-		l = mask_positive[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2]
-		m_n = mask_negative[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2]
 
-		t = cv.resize(t, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, N_CH))
-		l = cv.resize(l, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, 1))
-		m_n = cv.resize(m_n, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, 1))
+		if checkCoords(y,x,img_orig.shape):
+			t = img_orig[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2, :]
+			l = mask_positive[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2]
+			m_n = mask_negative[y-TILE_SIDE//2:y+TILE_SIDE//2, x-TILE_SIDE//2:x+TILE_SIDE//2]
 
-		m_sum = np.bitwise_or(l, m_n)
-		
-		assert m_sum.shape == (NN_SIDE, NN_SIDE, 1)
-		l_concat = np.zeros((NN_SIDE,NN_SIDE,2), dtype=np.uint8)
-		l_concat[:,:,0:1] = l
-		l_concat[:,:,1:2] = m_sum
-		tiles.append(t)
-		labels.append(l_concat)
+			t = cv.resize(t, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, N_CH))
+			l = cv.resize(l, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, 1))
+			m_n = cv.resize(m_n, (NN_SIDE, NN_SIDE)).reshape((NN_SIDE,NN_SIDE, 1))
+
+			m_sum = np.bitwise_or(l, m_n)
+			
+			assert m_sum.shape == (NN_SIDE, NN_SIDE, 1)
+			l_concat = np.zeros((NN_SIDE,NN_SIDE,2), dtype=np.uint8)
+			l_concat[:,:,0:1] = l
+			l_concat[:,:,1:2] = m_sum
+			tiles.append(t)
+			labels.append(l_concat)
 
 	#tiles_aug, labels_aug = batchAug(tiles, labels)
 	#tiles = np.array(tiles).astype(np.uint8)
@@ -335,15 +306,22 @@ def trainSingleShot():
 
 print('set up keras model')
 model_unet = models.unet_2d(input_size = (NN_SIDE, NN_SIDE, N_CH), filter_num = [16,32,64,128], n_labels=1, output_activation='Sigmoid', batch_norm=False)
+
 #model_unet = U_Net((NN_SIDE,NN_SIDE, N_CH))
 
 model_global = tf.keras.Sequential()
 model_global.add(tf.keras.layers.InputLayer(input_shape = (NN_SIDE,NN_SIDE,N_CH)))
 model_global.add(tf.keras.layers.Lambda(lambda x: x/255))
 model_global.add(model_unet)
-
 model_global.compile(loss=masked_bce_2ch, optimizer='adam', metrics = 'accuracy')
 
+
+
+model_inference = tf.keras.Sequential()
+model_inference.add(tf.keras.layers.InputLayer(input_shape = (NN_SIDE,NN_SIDE,N_CH)))
+model_inference.add(model_global)
+model_inference.add(tf.keras.layers.Lambda(lambda x: x*255))
+model_inference.add(tf.keras.layers.experimental.preprocessing.Resizing(TILE_SIDE, TILE_SIDE, interpolation = 'bilinear'))
 
 print('get generator')
 
