@@ -57,7 +57,8 @@ model_global = None
 
 TILE_SIDE = 128
 HALF_TILE_SIDE = TILE_SIDE//2
-NN_SIDE = int(round(128//16)*16)
+NN_SIDE = 128
+NN_SIDE = int(round(NN_SIDE//16)*16)
 HALF_NN_SIDE = NN_SIDE//2
 SCALE_FACTOR = NN_SIDE/TILE_SIDE
 
@@ -322,8 +323,6 @@ model_inference.add(tf.keras.layers.InputLayer(input_shape = (NN_SIDE,NN_SIDE,N_
 model_inference.add(model_global)
 model_inference.add(tf.keras.layers.Lambda(lambda x: x*255))
 model_inference.add(tf.keras.layers.experimental.preprocessing.Resizing(TILE_SIDE, TILE_SIDE, interpolation = 'bilinear'))
-
-print('get generator')
 
 
 
