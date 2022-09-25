@@ -15,10 +15,10 @@ inside opencv windows the following keys are valid:
 Esc - quit  
 1 - positive labeling brush  
 2 - negative labeling brush  
-3 - neural brush(available after train procedure) 
-t - train now for one epoch 
+3 - neural brush(available after train procedure)  
+t - train now for one epoch  
 s - save model  
-l - load model
+l - load model  
 
 The logic is the following - label with positive brush anything that should be segmented for sure in final output and label with negative brush enything that should be ommited from final output.  Train net for single time and switch to "3" to check the resulting neural brush.
 
