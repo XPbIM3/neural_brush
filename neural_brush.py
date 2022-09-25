@@ -1,5 +1,3 @@
-import os
-import sys
 import cv2 as cv
 import numpy as np
 import tensorflow as tf
@@ -415,8 +413,6 @@ def trainSingleShotNoWeights():
 
 
 model_unet = models.unet_2d(input_size = (NN_SIDE, NN_SIDE, N_CH), filter_num = [16,32,64,128], n_labels=2, output_activation='Softmax', batch_norm=False)
-
-#model_unet = U_Net((NN_SIDE,NN_SIDE, N_CH))
 
 model_global = tf.keras.Sequential()
 model_global.add(tf.keras.layers.InputLayer(input_shape = (NN_SIDE,NN_SIDE,N_CH)))

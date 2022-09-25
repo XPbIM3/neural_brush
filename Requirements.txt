@@ -1,0 +1,6 @@
+tensorflow == 2.8.0
+opencv-python
+keras-unet-collection
+numpy
+imgaug
+pillow
